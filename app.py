@@ -395,9 +395,24 @@ if not margin_calibrated:
 
 if view_mode == "Fleet overview":
 
+    FLEET_SNAPSHOT_FRACTION = 0.7  # simulate engines currently in service, not at failure
+
     @st.cache_data
-    def compute_fleet_predictions(_df, _feature_cols):
-        latest = _df.sort_values("cycle").groupby("engine_id").last().reset_index()
+    def compute_fleet_predictions(_df, _feature_cols, fraction=FLEET_SNAPSHOT_FRACTION):
+        # NOTE: this dashboard's demo data comes from engines run to failure for
+        # training. Taking each engine's literal last row would show every
+        # engine at its failure point by construction — not a realistic "fleet
+        # currently in service" snapshot. Instead, take each engine's row at a
+        # fixed fraction of its recorded life, giving a realistic mix of
+        # healthy/monitoring/critical engines. This avoids pandas'
+        # groupby-apply, whose behavior around the grouping column has changed
+        # across versions.
+        d = _df.sort_values(["engine_id", "cycle"]).reset_index(drop=True)
+        rank = d.groupby("engine_id").cumcount()
+        size = d.groupby("engine_id")["cycle"].transform("size")
+        target_idx = (size * fraction).astype(int).clip(upper=size - 1)
+        latest = d[rank == target_idx].reset_index(drop=True)
+
         preds = model.predict(latest[_feature_cols])
         latest["predicted_RUL"] = preds
         latest["safe_floor"] = latest["predicted_RUL"].apply(compute_safe_floor)
@@ -413,6 +428,15 @@ if view_mode == "Fleet overview":
         return latest[["engine_id", "cycle", "predicted_RUL", "safe_floor", "risk"]].sort_values("predicted_RUL")
 
     fleet_summary = compute_fleet_predictions(active_df, feature_cols)
+
+    st.caption(
+        f"Demo note: since this dataset's engines were run to failure for "
+        f"training, each engine's fleet-overview snapshot below is taken at "
+        f"{int(FLEET_SNAPSHOT_FRACTION*100)}% of its recorded life rather "
+        f"than its literal last cycle — otherwise every engine would show as "
+        f"critical by construction (since the last cycle *is* its failure "
+        f"point). Uploaded fleet data is treated the same way."
+    )
 
     n_engines = len(fleet_summary)
     n_critical = (fleet_summary["risk"] == "🔴 Maintenance needed soon").sum()
