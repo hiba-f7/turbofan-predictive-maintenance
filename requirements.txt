@@ -6,4 +6,4 @@ scikit-learn
 xgboost
 shap
 joblib
-fpdf2
+fpdf2>=2.7.6
