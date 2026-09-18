@@ -113,6 +113,9 @@ SENSOR_INFO = {
 }
 
 DEFAULT_SAFETY_MARGIN_FRACTION = 0.3  # fallback if safety_margin.json is missing
+DEMO_SNAPSHOT_FRACTION = 0.7  # default view point: simulates an engine currently
+# in service rather than at failure, since this dataset's engines were run to
+# failure for training and their literal last cycle is always the failure point
 
 # ---------- Load model + data (cached so it only loads once) ----------
 
@@ -352,11 +355,20 @@ if view_mode == "Single engine":
     selected_engine = st.sidebar.selectbox("Select engine", engine_ids)
 
     cycle_options = sorted(active_df[active_df["engine_id"] == selected_engine]["cycle"].unique())
+    default_idx = min(int(len(cycle_options) * DEMO_SNAPSHOT_FRACTION), len(cycle_options) - 1)
+    default_cycle = int(cycle_options[default_idx])
+
     selected_cycle = st.sidebar.slider(
         "Cycle (point in the engine's life)",
         min_value=int(min(cycle_options)),
         max_value=int(max(cycle_options)),
-        value=int(max(cycle_options)),
+        value=default_cycle,
+        key=f"cycle_slider_{selected_engine}",
+    )
+    st.sidebar.caption(
+        f"Defaults to {int(DEMO_SNAPSHOT_FRACTION*100)}% through this engine's "
+        "recorded life. Drag to the far right to see it at its actual "
+        "failure point (these are training engines run to failure)."
     )
 
     st.sidebar.divider()
@@ -402,10 +414,8 @@ if not margin_calibrated:
 
 if view_mode == "Fleet overview":
 
-    FLEET_SNAPSHOT_FRACTION = 0.7  # simulate engines currently in service, not at failure
-
     @st.cache_data
-    def compute_fleet_predictions(_df, _feature_cols, fraction=FLEET_SNAPSHOT_FRACTION):
+    def compute_fleet_predictions(_df, _feature_cols, fraction=DEMO_SNAPSHOT_FRACTION):
         # NOTE: this dashboard's demo data comes from engines run to failure for
         # training. Taking each engine's literal last row would show every
         # engine at its failure point by construction — not a realistic "fleet
@@ -439,7 +449,7 @@ if view_mode == "Fleet overview":
     st.caption(
         f"Demo note: since this dataset's engines were run to failure for "
         f"training, each engine's fleet-overview snapshot below is taken at "
-        f"{int(FLEET_SNAPSHOT_FRACTION*100)}% of its recorded life rather "
+        f"{int(DEMO_SNAPSHOT_FRACTION*100)}% of its recorded life rather "
         f"than its literal last cycle — otherwise every engine would show as "
         f"critical by construction (since the last cycle *is* its failure "
         f"point). Uploaded fleet data is treated the same way."
