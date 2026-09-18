@@ -7,7 +7,7 @@ monitoring dashboard.
 
 **[Live demo →](https://turbofan-predictive-maintenance-fqcznocxxcyi8aitt2dqjd.streamlit.app/)**
 
-![Dashboard screenshot](screenshot.png)
+![Dashboard screenshot](Dashboard_screenshot.png)
 
 ## Problem
 
