@@ -5,9 +5,9 @@ multivariate sensor data, using aircraft turbofan engines (NASA C-MAPSS,
 FD001) as the case study, with an explainable XGBoost model and a live
 monitoring dashboard.
 
-**[Live demo →](your-streamlit-link-here)**
+**[Live demo →]([your-streamlit-link-here](https://turbofan-predictive-maintenance-fqcznocxxcyi8aitt2dqjd.streamlit.app/))**
 
-![Dashboard screenshot](screenshot.png)
+![Dashboard screenshot](Dashboard_screenshot.png)
 
 ## Problem
 
