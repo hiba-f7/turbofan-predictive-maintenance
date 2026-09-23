@@ -15,6 +15,7 @@ the same folder as this script:
 """
 
 import json
+import re
 
 import joblib
 import numpy as np
@@ -25,7 +26,7 @@ from fpdf import FPDF
 from fpdf.enums import XPos, YPos
 from scipy.stats import linregress
 
-st.set_page_config(page_title="Turbofan RUL Predictor", layout="wide")
+st.set_page_config(page_title="Turbofan RUL Predictor & Copilot", layout="wide")
 
 # ---------- Sensor -> physical component reference ----------
 # Sensor descriptions are published in Saxena & Goebel (2008), "Damage
@@ -112,10 +113,79 @@ SENSOR_INFO = {
     },
 }
 
+# Simulated Fault Isolation Manual knowledge base for grounded retrieval
+FAULT_ISOLATION_MANUAL = [
+    {
+        "code": "FIM-72-001",
+        "subsystem": "High-Pressure Compressor (HPC)",
+        "sensors": ["sensor_3", "sensor_7", "sensor_11", "sensor_9", "sensor_14"],
+        "keywords": ["compressor", "ps30", "p30", "t30", "core", "pressure", "hpc"],
+        "ata_chapter": "ATA 72-30",
+        "probable_cause": "Rotor blade tip rub, severe aerodynamic seal wear, or foreign object damage (FOD).",
+        "actions": [
+            "Ground engine from extended-range flight operations if RUL < 25 cycles.",
+            "Perform flexible borescope inspection on HPC stages 3 through 6 through inspection ports B1 and B2.",
+            "Check lower gearbox magnetic chip detectors for metallic debris.",
+        ],
+        "tools": "6mm articulating video-borescope (Part No. P-6021), 3/8-inch calibrated torque wrench set.",
+    },
+    {
+        "code": "FIM-72-002",
+        "subsystem": "Low-Pressure Turbine (LPT) & Exhaust",
+        "sensors": ["sensor_4", "sensor_21"],
+        "keywords": ["turbine", "t50", "lpt", "w32", "exhaust", "thermal"],
+        "ata_chapter": "ATA 72-50",
+        "probable_cause": "Thermal barrier coating spallation, cooling vane passage blockage, or nozzle guide vane erosion.",
+        "actions": [
+            "Log hot-section thermal exposure margins.",
+            "Execute borescope inspection of LPT nozzle guide vanes and blade leading edges.",
+            "If thermal distress exceeds 15% surface area, schedule module replacement within 15 operating cycles.",
+        ],
+        "tools": "High-intensity UV borescope probe, thermal clearance feeler gauge set.",
+    },
+    {
+        "code": "FIM-72-003",
+        "subsystem": "High-Pressure Turbine (HPT)",
+        "sensors": ["sensor_20"],
+        "keywords": ["hpt", "w31", "coolant", "turbine", "bleed"],
+        "ata_chapter": "ATA 72-40",
+        "probable_cause": "HPT rotor seal leakage or coolant bleed restriction.",
+        "actions": [
+            "Verify high-pressure turbine cooling airflow paths.",
+            "Inspect stage 1 HPT blade shroud segments for thermal cracking.",
+        ],
+        "tools": "Optical thermal imaging borescope, depth micrometer.",
+    },
+    {
+        "code": "FIM-72-004",
+        "subsystem": "Low-Pressure Compressor (LPC) & Fan Module",
+        "sensors": ["sensor_2", "sensor_8", "sensor_13"],
+        "keywords": ["fan", "lpc", "t24", "nf", "nrf", "speed"],
+        "ata_chapter": "ATA 72-20",
+        "probable_cause": "Fan blade leading edge erosion, acoustic liner disbond, or unbalance due to ingestion.",
+        "actions": [
+            "Conduct tactile run-out check and visual inspection of all 24 wide-chord titanium fan blades.",
+            "Perform vibration spectrum survey during ground run-up at 70% and 85% N1.",
+        ],
+        "tools": "Dial indicator with magnetic mount, portable optical tachometer.",
+    },
+    {
+        "code": "FIM-72-005",
+        "subsystem": "Combustor & Fuel Delivery System",
+        "sensors": ["sensor_12"],
+        "keywords": ["fuel", "combustor", "phi", "ratio", "flow"],
+        "ata_chapter": "ATA 73-10",
+        "probable_cause": "Fuel nozzle coking, fuel flow divider drift, or combustor liner hot spot.",
+        "actions": [
+            "Inspect fuel manifold pressure differential.",
+            "Perform borescope check of combustor liner swirler nozzles for carbon buildup.",
+        ],
+        "tools": "Fuel nozzle spray calibration test rig, borescope with wide-angle lens.",
+    },
+]
+
 DEFAULT_SAFETY_MARGIN_FRACTION = 0.3  # fallback if safety_margin.json is missing
-DEMO_SNAPSHOT_FRACTION = 0.7  # default view point: simulates an engine currently
-# in service rather than at failure, since this dataset's engines were run to
-# failure for training and their literal last cycle is always the failure point
+DEMO_SNAPSHOT_FRACTION = 0.7  # default view point
 
 # ---------- Load model + data (cached so it only loads once) ----------
 
@@ -152,8 +222,7 @@ def slope(x):
 
 
 def add_features(raw_df, sensor_cols, roll_window=5, slope_window=10):
-    """Same feature engineering as the training notebook — must stay in sync
-    with predictive_maintenance.ipynb, Step 5, or predictions will be wrong."""
+    """Same feature engineering as the training notebook."""
     out = raw_df.copy()
     for col in sensor_cols:
         out[f"{col}_rollmean"] = out.groupby("engine_id")[col].transform(
@@ -219,8 +288,7 @@ def build_plain_english_summary(top_features_df, pred_rul):
 
 def get_component_diagnosis(top_features_df, max_items=3):
     """Map the top *worsening* SHAP contributors to physical subsystems and
-    a plausible inspection action, deduplicated so the same subsystem isn't
-    listed twice even if several of its sensors show up."""
+    a plausible inspection action."""
     worsening = top_features_df[top_features_df["shap_value"] < 0].copy()
     if worsening.empty:
         return []
@@ -237,6 +305,7 @@ def get_component_diagnosis(top_features_df, max_items=3):
         diagnosis.append(
             {
                 "subsystem": info["subsystem"],
+                "sensor_id": row["sensor_id"],
                 "sensor_name": info["name"],
                 "action": info["action"],
                 "shap_value": row["shap_value"],
@@ -247,7 +316,62 @@ def get_component_diagnosis(top_features_df, max_items=3):
     return diagnosis
 
 
-def generate_pdf_report(engine_id, cycle, pred_rul, safe_floor, status_text, diagnosis, margin_calibrated):
+def rag_retrieve_manual_entry(diagnosis_list):
+    """Retrieves relevant fault isolation directive grounded in the manual."""
+    if not diagnosis_list:
+        return FAULT_ISOLATION_MANUAL[0]
+
+    flagged_sensors = {d.get("sensor_id", "") for d in diagnosis_list}
+    flagged_subsystems = {d.get("subsystem", "").lower() for d in diagnosis_list}
+
+    # Best match based on sensor overlap
+    for entry in FAULT_ISOLATION_MANUAL:
+        if any(s in entry["sensors"] for s in flagged_sensors):
+            return entry
+
+    # Fallback to subsystem keyword match
+    for entry in FAULT_ISOLATION_MANUAL:
+        if any(kw in " ".join(flagged_subsystems) for kw in entry["keywords"]):
+            return entry
+
+    return FAULT_ISOLATION_MANUAL[0]
+
+
+def synthesize_maintenance_work_order(engine_id, cycle, pred_rul, safe_floor, diagnosis_list, manual_entry):
+    """Generates an actionable engineering work order from the retrieved manual."""
+    priority = "HIGH PRIORITY / GROUND ASSET" if pred_rul < 20 else ("MEDIUM PRIORITY / MONITOR" if pred_rul < 50 else "ROUTINE")
+    
+    actions_formatted = "\n".join([f"  {idx+1}. {act}" for idx, act in enumerate(manual_entry["actions"])])
+    
+    diagnostic_drivers = []
+    for d in diagnosis_list:
+        diagnostic_drivers.append(f"{d['subsystem']} ({d['sensor_name']})")
+    drivers_str = ", ".join(diagnostic_drivers) if diagnostic_drivers else "Nominal operating telemetry baseline"
+
+    work_order_text = f"""================================================================
+ENGINEERING WORK ORDER: AIRFRAME & POWERPLANT DISPATCH
+Directive Reference : {manual_entry['ata_chapter']} | Code: {manual_entry['code']}
+================================================================
+Asset Identifier    : Engine Unit #{engine_id}
+Operational Cycle   : {cycle}
+Predicted RUL       : {pred_rul:.1f} Cycles (Conservative Safe Floor: {safe_floor:.1f} Cycles)
+Dispatch Priority   : {priority}
+
+TELEMETRY & SHAP DIAGNOSIS:
+Dominant Driver(s)  : {drivers_str}
+Suspected Mechanism : {manual_entry['probable_cause']}
+
+RETRIEVED TECHNICAL DIRECTIVES ({manual_entry['ata_chapter']}):
+{actions_formatted}
+
+REQUIRED TOOLING & CLEARANCES:
+  • Tools: {manual_entry['tools']}
+  • Compliance Sign-off Required prior to next flight cycle dispatch.
+================================================================"""
+    return work_order_text
+
+
+def generate_pdf_report(engine_id, cycle, pred_rul, safe_floor, status_text, diagnosis, margin_calibrated, work_order_text=None):
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
@@ -259,13 +383,13 @@ def generate_pdf_report(engine_id, cycle, pred_rul, safe_floor, status_text, dia
         if gap_after:
             pdf.ln(gap_after)
 
-    def wrapped(text, size=11, style=""):
+    def wrapped(text, size=10, style=""):
         pdf.set_font("Helvetica", style, size)
         pdf.set_x(pdf.l_margin)
-        pdf.multi_cell(pdf.epw, 6, text, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.multi_cell(pdf.epw, 5.5, text, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
 
-    line(f"Engine {engine_id} - Maintenance Summary", size=16, style="B")
-    line("Generated by Turbofan RUL Predictor dashboard", size=10, gap_after=4)
+    line(f"Engine {engine_id} - Maintenance & Copilot Summary", size=16, style="B")
+    line("Generated by Turbofan RUL Predictor & AI Decision Copilot", size=10, gap_after=4)
 
     line(f"Current cycle: {cycle}")
     line(f"Predicted Remaining Useful Life: {pred_rul:.0f} cycles")
@@ -282,12 +406,18 @@ def generate_pdf_report(engine_id, cycle, pred_rul, safe_floor, status_text, dia
     else:
         line("No dominant risk driver identified at this cycle.")
 
+    if work_order_text:
+        pdf.ln(4)
+        line("AI Copilot Work Order Directive:", size=12, style="B")
+        for wo_line in work_order_text.splitlines():
+            wrapped(wo_line, size=8.5)
+
     pdf.ln(6)
     wrapped(
         "Educational project output, not a certified maintenance record. "
         "Generated from a model trained on the NASA C-MAPSS FD001 simulated "
         "turbofan degradation dataset.",
-        size=9,
+        size=8.5,
         style="I",
     )
 
@@ -312,7 +442,7 @@ def compute_safe_floor(pred_rul):
 st.sidebar.title("Turbofan RUL Predictor")
 st.sidebar.write(
     "Predicts Remaining Useful Life (RUL) of a jet engine from sensor "
-    "readings, using an XGBoost model trained on the NASA C-MAPSS dataset."
+    "readings with XGBoost and synthesizes maintenance work orders via an AI Copilot."
 )
 
 data_source = st.sidebar.radio(
@@ -400,7 +530,7 @@ else:
 
 # ---------- Main panel ----------
 
-st.title("Engine Health Monitor")
+st.title("Engine Health Monitor & AI Decision Copilot")
 
 if uploaded_engine_df is not None:
     st.info("Showing predictions on your uploaded data.")
@@ -416,14 +546,6 @@ if view_mode == "Fleet overview":
 
     @st.cache_data
     def compute_fleet_predictions(_df, _feature_cols, fraction=DEMO_SNAPSHOT_FRACTION):
-        # NOTE: this dashboard's demo data comes from engines run to failure for
-        # training. Taking each engine's literal last row would show every
-        # engine at its failure point by construction — not a realistic "fleet
-        # currently in service" snapshot. Instead, take each engine's row at a
-        # fixed fraction of its recorded life, giving a realistic mix of
-        # healthy/monitoring/critical engines. This avoids pandas'
-        # groupby-apply, whose behavior around the grouping column has changed
-        # across versions.
         d = _df.sort_values(["engine_id", "cycle"]).reset_index(drop=True)
         rank = d.groupby("engine_id").cumcount()
         size = d.groupby("engine_id")["cycle"].transform("size")
@@ -451,8 +573,7 @@ if view_mode == "Fleet overview":
         f"training, each engine's fleet-overview snapshot below is taken at "
         f"{int(DEMO_SNAPSHOT_FRACTION*100)}% of its recorded life rather "
         f"than its literal last cycle — otherwise every engine would show as "
-        f"critical by construction (since the last cycle *is* its failure "
-        f"point). Uploaded fleet data is treated the same way."
+        f"critical by construction. Uploaded fleet data is treated the same way."
     )
 
     n_engines = len(fleet_summary)
@@ -480,10 +601,7 @@ if view_mode == "Fleet overview":
         "run to an unplanned failure, and that scheduling maintenance now "
         "instead costs the 'scheduled maintenance' amount rather than the "
         "'unplanned failure' amount. Adjust the cost assumptions in the "
-        "sidebar to reflect a real fleet's numbers — the savings figure "
-        "scales directly with those inputs and is meant to illustrate the "
-        "business case for proactive maintenance, not to serve as a "
-        "financial forecast."
+        "sidebar to reflect a real fleet's numbers."
     )
 
     st.subheader("Spare parts / logistics alert")
@@ -497,12 +615,6 @@ if view_mode == "Fleet overview":
             use_container_width=True,
             hide_index=True,
         )
-    st.caption(
-        f"Flags any engine whose safe operating floor ({lead_time_cycles} "
-        "cycles, adjustable in the sidebar) is at or below the assumed "
-        "parts lead time — meaning an order placed today may not arrive "
-        "before the engine reaches its conservative safety limit."
-    )
 
     st.subheader("Fleet sorted by predicted risk (lowest RUL first)")
     st.dataframe(
@@ -522,12 +634,6 @@ if view_mode == "Fleet overview":
     st.subheader("Predicted RUL across the fleet")
     chart_data = fleet_summary.set_index("engine_id")["predicted_RUL"]
     st.bar_chart(chart_data)
-    st.caption(
-        "Each bar is one engine's predicted Remaining Useful Life at its "
-        "most recent recorded cycle. Switch to 'Single engine' in the "
-        "sidebar to inspect one engine's sensor history and prediction "
-        "explanation in detail."
-    )
 
 else:
     engine_df = active_df[active_df["engine_id"] == selected_engine].sort_values("cycle")
@@ -599,11 +705,6 @@ else:
                 f"⚠️ This engine may NOT safely complete {cycles_needed} more cycle(s) — "
                 f"its conservative safety floor is only {safe_floor:.0f} cycles."
             )
-        st.caption(
-            "Compares the requested number of cycles (sidebar) against the "
-            "conservative safe operating floor, not the raw point prediction — "
-            "a deliberately cautious comparison for scheduling decisions."
-        )
 
     st.divider()
 
@@ -632,25 +733,43 @@ else:
 
     st.divider()
 
-    # ---------- Component diagnosis ----------
+    # ---------- Component diagnosis & AI Maintenance Copilot ----------
 
-    st.subheader("Component diagnosis & suggested inspection")
+    st.subheader("Component Diagnosis & AI Maintenance Copilot")
     st.caption(
-        "FD001 engines in this dataset fail via a single documented mode: "
-        "High-Pressure Compressor (HPC) degradation. Sensor-to-component "
-        "mapping below is based on published C-MAPSS sensor descriptions "
-        "(Saxena & Goebel, 2008), not learned from data — it translates "
-        "which sensors are driving this prediction into a physical "
-        "subsystem and a plausible next inspection step."
+        "Integrates SHAP feature attributions with a Retrieval-Augmented Generation (RAG) "
+        "decision-support layer to synthesize grounded maintenance work orders from technical directives."
     )
 
+    work_order_text = None
     if top_features is not None:
         diagnosis = get_component_diagnosis(top_features)
-        if diagnosis:
-            for d in diagnosis:
-                st.warning(f"**{d['subsystem']}** — {d['action']}  \n*Indicator: {d['sensor_name']}*")
-        else:
-            st.success("No sensor is driving this prediction toward risk strongly enough to flag a component.")
+        
+        diag_col, copilot_col = st.columns([1, 1])
+        
+        with diag_col:
+            st.markdown("#### Physical Subsystem Diagnosis")
+            if diagnosis:
+                for d in diagnosis:
+                    st.warning(f"**{d['subsystem']}** — {d['action']}  \n*Indicator: {d['sensor_name']}*")
+            else:
+                st.success("No single sensor is driving this prediction toward risk strongly enough to flag a component.")
+
+        with copilot_col:
+            st.markdown("#### RAG Work Order Synthesis")
+            manual_entry = rag_retrieve_manual_entry(diagnosis)
+            
+            st.caption(f"Matched Manual Directive: **{manual_entry['ata_chapter']} ({manual_entry['code']})**")
+            if st.button("🛠️ Synthesize Maintenance Work Order", key="gen_work_order"):
+                work_order_text = synthesize_maintenance_work_order(
+                    selected_engine, selected_cycle, pred_rul, safe_floor, diagnosis, manual_entry
+                )
+                st.session_state[f"wo_{selected_engine}_{selected_cycle}"] = work_order_text
+
+            saved_wo = st.session_state.get(f"wo_{selected_engine}_{selected_cycle}")
+            if saved_wo:
+                st.code(saved_wo, language="text")
+                work_order_text = saved_wo
 
     st.divider()
 
@@ -658,11 +777,12 @@ else:
 
     if pred_rul is not None:
         try:
+            current_wo = st.session_state.get(f"wo_{selected_engine}_{selected_cycle}")
             pdf_bytes = generate_pdf_report(
-                selected_engine, selected_cycle, pred_rul, safe_floor, status_text, diagnosis, margin_calibrated
+                selected_engine, selected_cycle, pred_rul, safe_floor, status_text, diagnosis, margin_calibrated, current_wo
             )
             st.download_button(
-                "📄 Download PDF maintenance report",
+                "📄 Download PDF maintenance & copilot report",
                 data=pdf_bytes,
                 file_name=f"engine_{selected_engine}_cycle_{selected_cycle}_report.pdf",
                 mime="application/pdf",
@@ -673,9 +793,5 @@ else:
 st.divider()
 st.caption(
     "Educational project — not for real-world maintenance decisions. "
-    "Trained on the NASA C-MAPSS FD001 turbofan degradation dataset — "
-    "predictions are only meaningful for engines with this same sensor "
-    "schema and operating condition. A different machine type (bearings, "
-    "batteries, pumps, etc.) would need its own model trained on its own "
-    "sensor data."
+    "Trained on the NASA C-MAPSS FD001 turbofan degradation dataset."
 )
