@@ -365,8 +365,8 @@ RETRIEVED TECHNICAL DIRECTIVES ({manual_entry['ata_chapter']}):
 {actions_formatted}
 
 REQUIRED TOOLING & CLEARANCES:
-  - Tools: {manual_entry['tools']}
-  - Compliance Sign-off Required prior to next flight cycle dispatch.
+  • Tools: {manual_entry['tools']}
+  • Compliance Sign-off Required prior to next flight cycle dispatch.
 ================================================================"""
     return work_order_text
 
