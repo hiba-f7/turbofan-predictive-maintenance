@@ -19,7 +19,7 @@ st.set_page_config(
 @st.cache_resource
 def load_models():
     # Load XGBoost model bundle
-    xgb_pack = joblib.load("xgboost_model.pkl")  # Contains model, feature list, etc.
+    xgb_pack = joblib.load("model.pkl")  # Contains model, feature list, etc.
     # Load Unsupervised Isolation Forest artifact bundle
     iso_pack = joblib.load("iso_forest_onset_model.pkl")
     return xgb_pack, iso_pack
