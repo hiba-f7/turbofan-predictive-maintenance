@@ -342,7 +342,7 @@ if view_mode == "Fleet Overview":
         else:
             return 'background-color: #c6f6d5; color: #22543d;'
             
-    styled_df = ranked_df.style.applymap(color_status, subset=['Health Status'])
+    styled_df = ranked_df.style.map(color_status, subset=['Health Status'])
     st.dataframe(styled_df, use_container_width=True, height=360)
 
 
