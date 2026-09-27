@@ -1,9 +1,9 @@
 streamlit
 pandas
 numpy
-scipy
 scikit-learn
 xgboost
 shap
+matplotlib
+plotly
 joblib
-fpdf2>=2.7.6
