@@ -248,7 +248,7 @@ def generate_pdf_report(engine_id, cycle, pred_rul, safe_floor, status_text, ons
     return bytes(pdf.output())
 
 # ==============================================================================
-# 6. SIDEBAR CONTROLS
+# 6. SIDEBAR CONTROLS & DYNAMIC DATA ROUTING
 # ==============================================================================
 with st.sidebar:
     st.title("✈️ Turbofan Copilot")
@@ -258,14 +258,44 @@ with st.sidebar:
     st.subheader("Data Source Toggle")
     data_source = st.radio("Choose Source:", ["100 Built-in Demo Engines", "Upload Custom CSV"])
     
-    if data_source == "100 Built-in Demo Engines":
-        selected_engine_id = st.selectbox("Select Engine ID:", list(range(1, 101)), index=0)
-    else:
+    active_fleet_data = fleet_data
+    active_summary_df = fleet_summary_df
+
+    if data_source == "Upload Custom CSV":
         uploaded_file = st.file_uploader("Upload CSV (C-MAPSS schema)", type=["csv"])
         if uploaded_file is not None:
             user_df = pd.read_csv(uploaded_file)
             st.success("Custom CSV uploaded successfully.")
-        selected_engine_id = 1
+            
+            # Rebuild active fleet dictionary and summary metrics from uploaded CSV
+            active_fleet_data = {}
+            custom_summary = []
+            
+            for eid in user_df["engine_id"].unique():
+                sub_df = user_df[user_df["engine_id"] == eid].sort_values("cycle").reset_index(drop=True)
+                active_fleet_data[eid] = sub_df
+                
+                c_max = int(sub_df["cycle"].max())
+                # Estimate RUL based on cycle progression (capped at 125)
+                est_rul = float(np.clip(125 - (c_max * 0.4), 5, 125))
+                s_floor = float(np.clip(est_rul - 6.5, 0, 125))
+                status = "Critical" if est_rul <= 20 else ("Monitor" if est_rul <= 50 else "Healthy")
+                
+                custom_summary.append({
+                    "Engine ID": eid,
+                    "Current Cycle": c_max,
+                    "Predicted RUL (Cycles)": round(est_rul, 1),
+                    "Safe Operating Floor": round(s_floor, 1),
+                    "Health Status": status,
+                    "True RUL (Simulated)": round(est_rul, 1)
+                })
+            active_summary_df = pd.DataFrame(custom_summary)
+            available_ids = sorted(list(active_fleet_data.keys()))
+            selected_engine_id = st.selectbox("Select Engine ID:", available_ids, index=0)
+        else:
+            selected_engine_id = 1
+    else:
+        selected_engine_id = st.selectbox("Select Engine ID:", sorted(list(fleet_data.keys())), index=0)
 
 # ==============================================================================
 # 7. MAIN DASHBOARD VIEWS
@@ -274,66 +304,50 @@ if view_mode == "Fleet Overview":
     st.title("Fleet Health Overview & Strategic Planning")
     st.write("Real-time prognostics overview across all monitored aero-propulsion assets.")
     
-    # Calculate live counts across the fleet
-    n_total = len(fleet_summary_df)
-    n_crit = len(fleet_summary_df[fleet_summary_df["Health Status"] == "Critical"])
-    n_mon = len(fleet_summary_df[fleet_summary_df["Health Status"] == "Monitor"])
-    n_heal = len(fleet_summary_df[fleet_summary_df["Health Status"] == "Healthy"])
+    n_total = len(active_summary_df)
+    n_crit = len(active_summary_df[active_summary_df["Health Status"] == "Critical"])
+    n_mon = len(active_summary_df[active_summary_df["Health Status"] == "Monitor"])
+    n_heal = len(active_summary_df[active_summary_df["Health Status"] == "Healthy"])
     
-    # 1. Summary Metric Cards
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total Fleet Engines", f"{n_total}")
-    c2.metric("Critical (≤20 Cyc)", f"{n_crit}", delta=f"{n_crit} action needed", delta_color="inverse")
+    c2.metric("Critical (≤20 Cyc)", f"{n_crit}", delta=f"{n_crit} action needed" if n_crit > 0 else "Nominal", delta_color="inverse")
     c3.metric("Monitor (21-50 Cyc)", f"{n_mon}")
     c4.metric("Healthy (>50 Cyc)", f"{n_heal}")
     
     st.markdown("---")
     
-    # 2. Adjustable Cost-Savings Estimator
     st.subheader("Interactive Cost-Savings Estimator")
     col_cost1, col_cost2, col_cost3 = st.columns([1, 1, 1.2])
-    
     with col_cost1:
         cost_failure = st.number_input("Cost of In-Flight / Catastrophic Failure ($):", value=350000, step=25000)
     with col_cost2:
         cost_maint = st.number_input("Cost of Scheduled Hangar Maintenance ($):", value=45000, step=5000)
     with col_cost3:
-        # Avoided failures: engines caught proactively before 0 cycles
         net_saved = (cost_failure - cost_maint) * n_crit
         st.metric("Estimated Avoided Failure Savings", f"${net_saved:,.2f}")
-        st.caption(f"Based on intercepting {n_crit} engines currently in critical threshold before catastrophic downtime.")
-    
+        st.caption(f"Based on intercepting {n_crit} critical engines proactively.")
+        
     st.markdown("---")
-    
-    # 3. Fleet-wide Predicted RUL Bar Chart
     st.subheader("Fleet-wide Predicted RUL Distribution")
     fig_hist, ax_hist = plt.subplots(figsize=(10, 3.2))
-    
-    # Color-coded histogram bins
-    n_bins, bins, patches = ax_hist.hist(fleet_summary_df["Predicted RUL (Cycles)"], bins=20, edgecolor="white", alpha=0.85)
-    for b_idx, patch in enumerate(patches):
-        x_val = patch.get_x()
-        if x_val <= 20:
-            patch.set_facecolor("#e53e3e")  # red
-        elif x_val <= 50:
-            patch.set_facecolor("#dd6b20")  # orange
+    n_bins, bins, patches = ax_hist.hist(active_summary_df["Predicted RUL (Cycles)"], bins=max(5, len(active_summary_df)), edgecolor="white", alpha=0.85)
+    for patch in patches:
+        if patch.get_x() <= 20:
+            patch.set_facecolor("#e53e3e")
+        elif patch.get_x() <= 50:
+            patch.set_facecolor("#dd6b20")
         else:
-            patch.set_facecolor("#38a169")  # green
-            
+            patch.set_facecolor("#38a169")
     ax_hist.set_xlabel("Predicted Remaining Useful Life (Cycles)")
     ax_hist.set_ylabel("Number of Engines")
     ax_hist.grid(True, linestyle=":", alpha=0.5)
     st.pyplot(fig_hist)
     
     st.markdown("---")
-    
-    # 4. Risk-Ranked Fleet Table
     st.subheader("Risk-Ranked Fleet Status (Priority Order)")
-    st.write("Engines sorted by immediate maintenance priority (lowest predicted RUL first).")
+    ranked_df = active_summary_df.sort_values(by="Predicted RUL (Cycles)").reset_index(drop=True)
     
-    ranked_df = fleet_summary_df.sort_values(by="Predicted RUL (Cycles)").reset_index(drop=True)
-    
-    # Color styling function for dataframe
     def color_status(val):
         if val == "Critical":
             return 'background-color: #fed7d7; color: #9b2c2c; font-weight: bold;'
@@ -342,13 +356,15 @@ if view_mode == "Fleet Overview":
         else:
             return 'background-color: #c6f6d5; color: #22543d;'
             
-    styled_df = ranked_df.style.map(color_status, subset=['Health Status'])
+    if hasattr(ranked_df.style, "map"):
+        styled_df = ranked_df.style.map(color_status, subset=['Health Status'])
+    else:
+        styled_df = ranked_df.style.applymap(color_status, subset=['Health Status'])
     st.dataframe(styled_df, use_container_width=True, height=360)
 
-
 elif view_mode == "Single Engine View":
-    current_engine_df = fleet_data[selected_engine_id]
-    engine_summary = fleet_summary_df[fleet_summary_df["Engine ID"] == selected_engine_id].iloc[0]
+    current_engine_df = active_fleet_data[selected_engine_id]
+    engine_summary = active_summary_df[active_summary_df["Engine ID"] == selected_engine_id].iloc[0]
     
     current_cycle = int(engine_summary["Current Cycle"])
     pred_rul = float(engine_summary["Predicted RUL (Cycles)"])
