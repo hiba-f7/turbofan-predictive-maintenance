@@ -4,7 +4,8 @@ Predicts Remaining Useful Life (RUL) of industrial rotating machinery from multi
 
 **[Live Streamlit Dashboard →](https://turbofan-predictive-maintenance-fqcznocxxcyi8aitt2dqjd.streamlit.app/)**
 
-![Dashboard screenshot](Dashboard_screenshot.png)
+![Dashboard screenshot](DashScreenshot1.png)
+![Dashboard screenshot](DashScreenshot2.png)
 
 ## Problem Definition
 
