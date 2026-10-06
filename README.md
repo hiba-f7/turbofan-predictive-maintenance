@@ -59,3 +59,33 @@ The interactive Streamlit application (`app.py`) provides:
 - **Dynamic CSV Ingestion**: Allows users to upload custom telemetry CSV files conforming to the C-MAPSS schema.
 
 ## Project Structure
+```
+├── Project.ipynb                  # Data pipeline, ML/LSTM modeling & SHAP analysis
+├── app.py                         # Streamlit diagnostic web application
+├── requirements.txt               # Pinned Python package dependencies
+├── model.pkl                      # Serialized tuned XGBoost model artifact
+├── iso_forest_onset_model.pkl     # Serialized Isolation Forest degradation model
+├── feature_cols.json              # Model input feature schema
+├── sensor_cols.json               # Active wear-sensitive sensor channel list
+├── safety_margin.json             # Calibrated 95% statistical safety buffer
+├── dashboard_data.csv             # Fleet telemetry data for app exploration
+├── results_table.csv              # Cross-validated benchmark performance table
+└── *.png                          # Telemetry plots and dashboard preview captures
+```
+
+## Running Locally
+
+```bash
+git clone [https://github.com/hiba-f7/turbofan-predictive-maintenance.git](https://github.com/hiba-f7/turbofan-predictive-maintenance.git)
+cd turbofan-predictive-maintenance
+pip install -r requirements.txt
+streamlit run app.py
+```
+
+## References
+
+1. A. Saxena and K. Goebel, "Turbofan Engine Degradation Simulation Data Set," NASA Ames Prognostics Data Repository, NASA Ames Research Center, Moffett Field, CA, 2008.
+2. T. Chen and C. Guestrin, "XGBoost: A Scalable Tree Boosting System," in *Proc. 22nd ACM SIGKDD*, 2016.
+3. F. T. Liu, K. M. Ting, and Z. Zhou, "Isolation Forest," in *Proc. 2008 Eighth IEEE ICDM*, 2008.
+4. S. M. Lundberg and S.-I. Lee, "A Unified Approach to Interpreting Model Predictions," *NeurIPS*, 2017.
+5. P. Lewis et al., "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks," *NeurIPS*, 2020.
