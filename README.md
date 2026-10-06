@@ -73,14 +73,6 @@ The interactive Streamlit application (`app.py`) provides:
 └── *.png                          # Telemetry plots and dashboard preview captures
 ```
 
-## Running Locally
-
-```bash
-git clone [https://github.com/hiba-f7/turbofan-predictive-maintenance.git](https://github.com/hiba-f7/turbofan-predictive-maintenance.git)
-cd turbofan-predictive-maintenance
-pip install -r requirements.txt
-streamlit run app.py
-```
 
 ## References
 
